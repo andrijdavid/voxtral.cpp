@@ -143,6 +143,38 @@ endif()
 add_executable(voxtral src/main.cpp)
 target_link_libraries(voxtral PRIVATE voxtral_lib)
 
+# ── voxtral-server (HTTP transcription server) ──────────────────────
+option(VOXTRAL_BUILD_SERVER "Build voxtral-server HTTP executable" ON)
+
+if(VOXTRAL_BUILD_SERVER)
+    include(FetchContent)
+    FetchContent_Declare(
+        httplib
+        GIT_REPOSITORY https://github.com/yhirose/cpp-httplib.git
+        GIT_TAG        v0.20.0
+        GIT_SHALLOW    TRUE
+    )
+    set(HTTPLIB_COMPILE OFF CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(httplib)
+
+    add_executable(voxtral-server src/server.cpp)
+    target_link_libraries(voxtral-server PRIVATE voxtral_lib httplib::httplib)
+
+    if(VOXTRAL_WARNINGS_AS_ERRORS)
+        if(MSVC)
+            target_compile_options(voxtral-server PRIVATE /W4 /WX)
+        else()
+            target_compile_options(voxtral-server PRIVATE -Wall -Wextra -Wpedantic -Werror)
+        endif()
+    endif()
+
+    if(VOXTRAL_NATIVE_OPT AND NOT MSVC)
+        if(NOT APPLE)
+            target_compile_options(voxtral-server PRIVATE -march=native -mtune=native)
+        endif()
+    endif()
+endif()
+
 add_executable(voxtral-quantize src/voxtral-quantize.cpp)
 target_link_libraries(voxtral-quantize PRIVATE ggml Threads::Threads)
 
