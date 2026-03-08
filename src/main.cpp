@@ -27,6 +27,7 @@ struct cli_params {
     int32_t max_tokens = 256;
     voxtral_log_level log_level = voxtral_log_level::info;
     voxtral_gpu_backend gpu = voxtral_gpu_backend::none;
+    bool stdin_mode = false;
 };
 
 struct backend_reg_info {
@@ -213,6 +214,9 @@ void print_usage(const char * argv0) {
         << "  --output-text PATH    write decoded text to file (still prints to stdout)\n"
         << "  --gpu BACKEND         gpu backend: auto|cuda|metal|vulkan|none (default: none)\n"
         << "  --metal               alias for --gpu metal\n"
+        << "  --stdin               interactive mode: read audio paths from stdin (one per line),\n"
+        << "                        keeps model loaded between transcriptions.\n"
+        << "                        Output ends with __VOXTRAL_END__ sentinel per file.\n"
         << "  -h, --help            show this help\n";
 }
 
@@ -357,6 +361,8 @@ bool parse_args(int argc, char ** argv, cli_params & p) {
             }
         } else if (a == "--metal") {
             p.gpu = voxtral_gpu_backend::metal;
+        } else if (a == "--stdin") {
+            p.stdin_mode = true;
         } else {
             std::cerr << "unknown option: " << a << "\n";
             return false;
@@ -368,8 +374,8 @@ bool parse_args(int argc, char ** argv, cli_params & p) {
         return false;
     }
 
-    if (p.audio.empty()) {
-        std::cerr << "--audio is required\n";
+    if (p.audio.empty() && !p.stdin_mode) {
+        std::cerr << "--audio is required (or use --stdin for interactive mode)\n";
         return false;
     }
 
@@ -436,6 +442,43 @@ int main(int argc, char ** argv) {
     if (!ctx) {
         voxtral_model_free(model);
         return finish(3);
+    }
+
+    if (p.stdin_mode) {
+        std::cerr << "voxtral: stdin mode ready, waiting for audio paths...\n";
+        std::cout << "__VOXTRAL_READY__" << std::endl;
+
+        std::string line;
+        while (std::getline(std::cin, line)) {
+            // Trim whitespace
+            while (!line.empty() && (line.back() == '\r' || line.back() == '\n' || line.back() == ' ')) {
+                line.pop_back();
+            }
+            if (line.empty()) {
+                continue;
+            }
+
+            const auto t_req = std::chrono::steady_clock::now();
+
+            voxtral_result result;
+            if (!voxtral_transcribe_file(*ctx, line, p.max_tokens, result)) {
+                std::cout << "[error] transcription failed for: " << line << "\n";
+            } else {
+                const std::string text = result.text.empty() ? std::string("[no-transcript]") : result.text;
+                std::cout << text << "\n";
+            }
+
+            const double req_ms = std::chrono::duration<double, std::milli>(
+                std::chrono::steady_clock::now() - t_req).count();
+            std::cerr << std::fixed << std::setprecision(2)
+                      << "[stdin] transcribed " << line << " in " << req_ms << " ms\n";
+
+            std::cout << "__VOXTRAL_END__" << std::endl;
+        }
+
+        voxtral_free(ctx);
+        voxtral_model_free(model);
+        return finish(0);
     }
 
     voxtral_result result;
