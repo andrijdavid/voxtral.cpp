@@ -1223,6 +1223,31 @@ static void clear_kv_cache(voxtral_context * ctx) {
     if (!ctx || !ctx->kv_self_k || !ctx->kv_self_v) {
         return;
     }
+    const bool k_host = ctx->kv_self_k->buffer != nullptr &&
+                        ggml_backend_buffer_is_host(ctx->kv_self_k->buffer);
+    const bool v_host = ctx->kv_self_v->buffer != nullptr &&
+                        ggml_backend_buffer_is_host(ctx->kv_self_v->buffer);
+
+    // On non-host buffers (CUDA/Vulkan/Metal), raw memset on ggml_get_data()
+    // may access device pointers and segfault. Clear through backend ops instead.
+    if (!k_host || !v_host) {
+        if (ctx->buf_persistent) {
+            ggml_backend_buffer_clear(ctx->buf_persistent, 0);
+        } else {
+            static thread_local std::vector<uint8_t> zeros(1 << 20, 0);
+
+            for (ggml_tensor * t : {ctx->kv_self_k, ctx->kv_self_v}) {
+                const size_t nbytes = ggml_nbytes(t);
+                for (size_t off = 0; off < nbytes; off += zeros.size()) {
+                    const size_t n = std::min(zeros.size(), nbytes - off);
+                    ggml_backend_tensor_set(t, zeros.data(), off, n);
+                }
+            }
+        }
+        ctx->kv_used = 0;
+        return;
+    }
+
     void * k_data = ggml_get_data(ctx->kv_self_k);
     void * v_data = ggml_get_data(ctx->kv_self_v);
     if (k_data) {
@@ -1238,6 +1263,15 @@ static void kv_cache_shift_left(voxtral_context * ctx, int32_t shift) {
     if (!ctx || shift <= 0 || !ctx->kv_self_k || !ctx->kv_self_v) {
         return;
     }
+    const bool k_host = ctx->kv_self_k->buffer != nullptr &&
+                        ggml_backend_buffer_is_host(ctx->kv_self_k->buffer);
+    const bool v_host = ctx->kv_self_v->buffer != nullptr &&
+                        ggml_backend_buffer_is_host(ctx->kv_self_v->buffer);
+    if (!k_host || !v_host) {
+        clear_kv_cache(ctx);
+        return;
+    }
+
     const int32_t window = VOXTRAL_DEC_WINDOW;
     if (shift >= window) {
         clear_kv_cache(ctx);
